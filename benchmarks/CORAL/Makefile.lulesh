@@ -1,0 +1,37 @@
+include ../../../../Makefile.common
+
+
+############ GENERAL CONFIGURATION
+
+
+APP_NAME=lulesh
+LANGUAGE=C++
+# Next line is to skip polyhedral DSE. It is long time that we do not test it, it may not work any longer
+SKIP_PLUTO=True
+
+
+
+SOURCES_C=
+SOURCES_CC=lulesh.cc lulesh-comm.cc lulesh-viz.cc lulesh-util.cc lulesh-init.cc
+SOURCES_CPP=
+SOURCES_F=
+
+
+
+############ APPLICATION CONFIGURATION
+
+# Let us assume that you have a compile time parameter (CTP) you want to investigate and it is named CTP.
+# You first need to define the parameter in the autorun.py file.
+# This makefile will be automatically called by passing the value of that parameter.
+# You can handle that by adding the default parameter definition in here:
+#CTP?=1000
+#
+# Then you can pass the parameter to the application at compile time by adding the flags: -DCTP=$(CTP) to the APPADDFFLAGS
+
+APPADDCFLAGS=-I$(MPI_DIR)/include -fopenmp -DUSE_MPI=1
+APPADDLDFLAGS=-L$(MPI_DIR)/lib -lmpi 
+
+include ../../../../Makefile.common.PISA
+include ../../../../Makefile.common.commands
+
+

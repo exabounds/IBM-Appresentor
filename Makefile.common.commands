@@ -1,0 +1,247 @@
+#
+# (C) Copyright IBM Corporation 2017
+#
+# All rights reserved. This program and the accompanying materials
+# are made available under the terms of the Eclipse Public License v1.0
+# which accompanies this distribution, and is available at
+# http://www.eclipse.org/legal/epl-v10.html
+#
+# Contributors:
+#    IBM Algorithms & Machines team
+#
+
+CFLAGS+= $(APPADDCFLAGS)
+LDFLAGS+= $(APPADDLDFLAGS)
+DRAGONEGG_FLAGS+= $(APPADDFFLAGS)
+
+ifeq ($(LANGUAGE),FORTRAN)
+	LDFLAGS+= -lgfortran
+endif
+
+
+.PHONY: clean isolate generate_input $(APP_NAME).dnls main.dnls.bc BootServer
+.PRECIOUS: ${SOURCES_C:.c=_post.c} ${SOURCES_CC:.cc=_post.cc} ${SOURCES_CPP:.cpp=_post.cpp} $(APP_NAME).cnls $(APP_NAME).*.cnls $(APP_NAME).dnls %profile $(APP_NAME).*.dnls $(APP_NAME).exe
+.SECONDARY: main.bc 
+.NOTPARALLEL: $(SOURCES_C:.c=_pluto.c) $(SOURCES_CC:.cc=_pluto.cc) $(SOURCES_CPP:.cpp=_pluto.cpp)
+ISOLATED_BUILD_DIR?=temp
+TEST_NAME?=experiment
+
+all: exe_instrumented exe_plain
+
+SKIP_PLUTO?=True
+
+SOURCES_BC=${SOURCES_C:.c=.bc} ${SOURCES_CC:.cc=.bc} ${SOURCES_CPP:.cpp=.bc} ${SOURCES_F:.f=.bc}
+INTERESTING_FILES=${SOURCES_C} ${SOURCES_CC} ${SOURCES_CPP} ${SOURCES_C:.c=_post.c} ${SOURCES_CC:.cc=_post.cc} ${SOURCES_CPP:.cpp=_post.cpp} $(APP_NAME).cnls $(APP_NAME).dnls $(APP_NAME).exe
+C_CREATED_FILES=${SOURCES_C:.c=.bc} $(SOURCES_C:.c=_e.c) $(SOURCES_C:.c=_pluto.c) $(SOURCES_C:.c=_expanded.c) $(SOURCES_C:.c=_pluto.pluto.cloog) ${SOURCES_C:.c=.ll} $(SOURCES_C:.c=_post.c) 
+CC_CREATED_FILES=${SOURCES_CC:.cc=.bc} $(SOURCES_CC:.cc=_e.cc) $(SOURCES_CC:.cc=_expanded.cc) $(SOURCES_CC:.cc=_pluto.cc) $(SOURCES_CC:.cc=_pluto.pluto.cloog) ${SOURCES_CC:.cc=.ll} $(SOURCES_CC:.cc=_post.cc) 
+CPP_CREATED_FILES=${SOURCES_CPP:.cpp=.bc} $(SOURCES_CPP:.cpp=_e.cpp) $(SOURCES_CPP:.cpp=_expanded.cpp) $(SOURCES_CPP:.cpp=_pluto.cpp) $(SOURCES_CPP:.cpp=_pluto.pluto.cloog) ${SOURCES_CPP:.cpp=.ll} $(SOURCES_CPP:.cpp=_pluto.cpp) 
+F_CREATED_FILES=${SOURCES_F:.f=.bc0} $(SOURCES_F:.f=.bc) 
+INSTRUMENTED_BC=main.cnls.bc main.*.cnls.bc ${APP_NAME}.cnls ${APP_NAME}.*.cnls main.dnls.bc main.*.dnls.bc ${APP_NAME}.dnls ${APP_NAME}.*.dnls ${APP_NAME}.exe main.stage1.bc main.stage2.bc
+
+
+ifneq ($(SKIP_PLUTO),True)
+	PATTERN_C = %_post.c
+	PATTERN_CC = %_post.cc
+	PATTERN_CPP = %_post.cpp
+else
+	PATTERN_C = %.c
+	PATTERN_CC = %.cc
+	PATTERN_CPP = %.cpp
+endif
+
+
+ifeq ("$(strip $(GENERATE_COMPILE_TIME_INPUT_CMD))","")
+	INPUT_DEPENDENCES=
+else
+	INPUT_DEPENDENCES=generate_input
+endif
+
+
+%_e.c: %.c
+	echo "	EXP	$<"
+	$(CC) $< $(CFLAGS) -E -P -o $@
+
+%_e.cc: %.cc
+	echo "	EXP	$<"
+	$(CCPP) $< $(CFLAGS) -E -P -o $@
+
+%_e.cpp: %.cpp
+	echo "	EXP	$<"
+	$(CCPP) $< $(CFLAGS) -E -P -o $@
+
+%_expanded.c: %_e.c %.c
+	echo "	PREPROC	$<"
+	$(PLUTO_EXPANDER) --input_file_c $(word 2,$^) --input_file_E $< --out $@ 
+
+%_expanded.cc: %_e.cc %.cc
+	echo "	PREPROC	$<"
+	$(PLUTO_EXPANDER) --input_file_c $(word 2,$^) --input_file_E $< --out $@ 
+
+%_expanded.cpp: %_e.cpp %.cpp
+	echo "	PREPROC	$<"
+	$(PLUTO_EXPANDER) --input_file_c $(word 2,$^) --input_file_E $< --out $@ 
+
+%_pluto.c: %_expanded.c
+	echo "	PLUTO	$<"
+	python $(PLUTO_SCRIPT) $(OPTIMIZATION_FLAGS) --polycc $(PLUTO) --out $@ $<
+
+%_pluto.cc: %_expanded.cc
+	echo "	PLUTO	$<"
+	python $(PLUTO_SCRIPT) $(OPTIMIZATION_FLAGS) --polycc $(PLUTO) --out $@ $<
+
+%_pluto.cpp: %_expanded.cpp
+	echo "	PLUTO	$<"
+	python $(PLUTO_SCRIPT) $(OPTIMIZATION_FLAGS) --polycc $(PLUTO) --out $@ $<
+
+%_post.c: %_pluto.c
+	echo "	POST	$<"
+	$(PLUTO_POSTPROCESSOR) --out $@ --input $<
+
+%_post.cc: %_pluto.cc
+	echo "	POST	$<"
+	$(PLUTO_POSTPROCESSOR) --out $@ --input $<
+
+%_post.cpp: %_pluto.cpp
+	echo "	POST	$<"
+	$(PLUTO_POSTPROCESSOR) --out $@ --input $<
+
+%.ll: $(PATTERN_C)
+	echo "	CC	$<"
+	$(CC) $< $(CFLAGS)  -S -o $@
+#	$(CC) $< $(CFLAGS)   $(shell $(PLUTO_FLAG) $(OPTIMIZATION_FLAGS) clang) -S -o $@
+
+%.ll: $(PATTERN_CC)
+	echo "	CXX	$<"
+	$(CCPP) $< $(CFLAGS) -S -o $@
+#	$(CCPP) $< $(CFLAGS)   $(shell $(PLUTO_FLAG) $(OPTIMIZATION_FLAGS) clang) -S -o $@
+
+%.ll: $(PATTERN_CPP)
+	echo "	CXX	$<"
+	$(CCPP) $< $(CFLAGS) -S -o $@
+#	$(CCPP) $< $(CFLAGS)   $(shell $(PLUTO_FLAG) $(OPTIMIZATION_FLAGS) clang) -S -o $@
+
+%.bc: %.ll
+	echo "	OPT	$<"
+	$(OPT) $<  -o $@
+#	$(OPT) $< $(shell $(PLUTO_FLAG) $(OPTIMIZATION_FLAGS) opt)  -o $@
+
+#FORTRAN SUPPORT:
+%.bc0: %.f
+	$(CFORTRAN) $(DRAGONEGG_FLAGS) $< -o $@
+	
+%.bc: %.bc0
+	$(OPT) $(OPT_OPT_FLAGS) $< -o $@
+
+isolate:
+	mkdir -p $(ISOLATED_BUILD_DIR)
+	cp $(SOURCES_C) $(SOURCES_CC) $(SOURCES_CPP) $(SOURCES_F) $(ADDFILES) $(ISOLATED_BUILD_DIR)
+	printf "include $(FOLDER_GLOBAL_BASE)/$(MAKEFILECOMMON)\nAPP_NAME=application\nLANGUAGE=$(LANGUAGE)\nSOURCES_C=$(SOURCES_C)\nSOURCES_CC=$(SOURCES_CC)\nSOURCES_CPP=$(SOURCES_CPP)\nSOURCES_F=$(SOURCES_F)\nAPPADDCFLAGS=$(LOCALINCLUDEFLAGS) $(APPADDCFLAGS)\nAPPADDFFLAGS=$(LOCALINCLUDEFLAGS) $(APPADDFFLAGS)\nAPPADDLDFLAGS=$(APPADDLDFLAGS)\nOPTIMIZATION_FLAGS=$(OPTIMIZATION_FLAGS)\nWINDOW_SIZE=$(WINDOW_SIZE)\nDATA_CACHE_LINE_SIZE=$(DATA_CACHE_LINE_SIZE)\nINST_CACHE_LINE_SIZE=$(INST_CACHE_LINE_SIZE)\nINST_SIZE=$(INST_SIZE)\nSKIP_PLUTO=$(SKIP_PLUTO)\nGENERATE_COMPILE_TIME_INPUT_CMD=$(GENERATE_COMPILE_TIME_INPUT_CMD)\ninclude $(FOLDER_GLOBAL_BASE)/Makefile.common.PISA\ninclude $(FOLDER_GLOBAL_BASE)/Makefile.common.commands\n" > $(ISOLATED_BUILD_DIR)/Makefile
+
+main.bc: $(SOURCES_BC)
+	echo "	LD	$(APP_NAME)"
+	$(LD) $(SOURCES_BC) -o main.bc
+	
+main.O.bc: main.bc
+	$(OPT) $(OPT_OPT_FLAGS) $< -o $@
+	
+main.mem2reg.bc: main.O.bc
+	$(OPT) $< -mem2reg -o $@
+	
+main.instnamer.bc: main.mem2reg.bc
+	$(OPT) $< -instnamer -o $@
+
+main.cnls.bc: main.instnamer.bc
+	echo "	CNLS	$(APP_NAME)"
+	$(OPT) $< $(OPT_CNLS_FLAGS) $(NLS_FLAGS) -o $@
+	
+main.%.cnls.bc: main.instnamer.bc
+	echo "	CNLS	$(APP_NAME)"
+	$(OPT) $< $(OPT_CNLS_FLAGS) $(call GetPISAflags,$@) -o $@
+
+
+main.dnls.bc: main.instnamer.bc
+	echo "	DNLS	$(APP_NAME)"
+	$(OPT) $< $(OPT_DNLS_FLAGS) -server='127.0.0.1:$(PISA_PORT)' -o $@ 
+
+BootServer:
+	$(PISA_LIB_PATH)/server -filename ./main.instnamer.bc -ip 127.0.0.1 -portno $(PISA_PORT) $(NLS_FLAGS) $(NLS_DONLY_FLAGS) > $(notdir $(SERVER_LOG)) 2>&1
+
+generate_input:
+	$(GENERATE_COMPILE_TIME_INPUT_CMD)
+
+exe_instrumented: $(APP_NAME).cnls
+
+$(APP_NAME).cnls: main.cnls.bc $(INPUT_DEPENDENCES)
+ifneq ($(LANGUAGE),C_old)
+	echo "	GEN	$(APP_NAME).cnls"
+	$(CCPP) $(LD_CNLS_FLAGS) $(LDFLAGS) main.cnls.bc -o $(APP_NAME).cnls
+else    
+	echo "	GEN	$(APP_NAME).cnls"
+	$(CC)   $(LD_CNLS_FLAGS) $(LDFLAGS) main.cnls.bc -o $(APP_NAME).cnls
+endif
+
+$(APP_NAME).%.cnls: main.%.cnls.bc
+ifneq ($(LANGUAGE),C)
+	echo "	GEN	$(APP_NAME).cnls"
+	$(CCPP) $(LD_CNLS_FLAGS) $(LDFLAGS) $< -o $@
+else    
+	echo "	GEN	$(APP_NAME).cnls"
+	$(CC)   $(LD_CNLS_FLAGS) $(LDFLAGS) $< -o $@
+endif
+
+$(APP_NAME).dnls: main.dnls.bc $(INPUT_DEPENDENCES)
+ifneq ($(LANGUAGE),C_old)
+	echo "	GEN	$(APP_NAME).dnls"
+	$(CCPP) $(LD_DNLS_FLAGS) $(LDFLAGS) main.dnls.bc -o $(APP_NAME).dnls
+else    
+	echo "	GEN	$(APP_NAME).dnls"
+	$(CC)   $(LD_DNLS_FLAGS) $(LDFLAGS) main.dnls.bc -o $(APP_NAME).dnls
+endif
+
+$(APP_NAME).exe: main.O.bc $(INPUT_DEPENDENCES)
+ifneq ($(LANGUAGE),C)
+	echo "	GEN	$(APP_NAME).exe"
+	$(CCPP) $(LDFLAGS) main.O.bc -o $(APP_NAME).exe
+else    
+	echo "	GEN	$(APP_NAME).exe"
+	$(CC) $(LDFLAGS) main.O.bc -o $(APP_NAME).exe
+endif
+
+
+exe_plain: $(APP_NAME).exe
+
+
+install: exe_instrumented exe_plain exe_dtr_instrumented
+	mkdir -p $(FOLDER_GLOBAL_BASE)/bin
+	install ${APP_NAME}.cnls $(FOLDER_GLOBAL_BASE)/bin
+	install ${APP_NAME}.dtr.cnls $(FOLDER_GLOBAL_BASE)/bin
+	install $(APP_NAME).exe $(FOLDER_GLOBAL_BASE)/bin
+
+
+compress:
+	echo "	COMPRESS FILES"
+	tar -zcvf $(APP_NAME).tar.gz $(INTERESTING_FILES)
+	echo "	CLEAN GENERATED FILES"
+	rm -f $(C_CREATED_FILES) $(CC_CREATED_FILES) $(CPP_CREATED_FILES) $(INSTRUMENTED_BC) __tmpe main.O.bc tile.sizes main.cnls.bc main.*.cnls.bc ${APP_NAME}.cnls ${APP_NAME}.exe main.stage1.bc main.stage2.bc main.O.bc main.cnls.bc
+	echo "	CLEAN SOURCE FILES"
+	rm -f ${SOURCES_C} ${SOURCES_CC} ${SOURCES_CPP} ${SOURCES_F}
+
+
+clean:
+	echo "	CLEAN"
+	rm -f $(C_CREATED_FILES) $(CC_CREATED_FILES) $(CPP_CREATED_FILES) $(INSTRUMENTED_BC) __tmpe main.O.bc tile.sizes *.bc *.bc0
+
+clean_instruments:
+	echo "	CLEAN INSTRUMENTED"
+	rm -f $(INSTRUMENTED_BC) __tmpe main.O.bc tile.sizes
+
+
+# Execution and profiling commands
+%.cnls.rawprofile: 
+	env AddJSONData=$*.header.json env PISAFileName=$@ $(OMPENVSETTING) $(MPIEXECUTIONCOMMAND) $(MPIHOSTSFLAG) ./$(APP_NAME).cnls $(RUNTIMEARGS)
+
+%.time:
+	$(OMPENVSETTING) $(PROFILER) -o $@ $(MPIEXECUTIONCOMMAND) $(MPIHOSTSFLAG) ./$(APP_NAME).exe $(RUNTIMEARGS) > $*.native.log
+
+
+

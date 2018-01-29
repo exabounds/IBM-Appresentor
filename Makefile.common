@@ -1,0 +1,61 @@
+#
+# (C) Copyright IBM Corporation 2017
+#
+# All rights reserved. This program and the accompanying materials
+# are made available under the terms of the Eclipse Public License v1.0
+# which accompanies this distribution, and is available at
+# http://www.eclipse.org/legal/epl-v10.html
+#
+# Contributors:
+#    IBM Algorithms & Machines team
+#
+
+SELF_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
+MAKEFILECOMMON=Makefile.common
+
+# optimization level -O3 includes -loop-vectorize. "opt -O3 -debug-pass=Arguments bt.bc0 -o bt.bc"
+OPT_LEVEL=-O3 
+VECTOR_WIDTH=16
+
+CLGANG_OPT_FLAGS=$(OPT_LEVEL) -mllvm -force-vector-width=$(VECTOR_WIDTH)
+OPT_OPT_FLAGS=$(OPT_LEVEL) -force-vector-width=$(VECTOR_WIDTH)
+LINK_OPT_FLAGS=$(OPT_LEVEL) -mllvm -force-vector-width=$(VECTOR_WIDTH)
+
+LOCALINCLUDEFLAGS=-I$(abspath $(dir ./)) -I$(abspath $(dir ../)) -I$(abspath $(dir ../include)) -I$(abspath $(dir ../include)) 
+
+CFLAGS=-emit-llvm $(LOCALINCLUDEFLAGS) $(CLGANG_OPT_FLAGS)
+LDFLAGS=-lm -L$(MPI_DIR)/lib -lmpi -lmpi_cxx  -liomp5 $(shell llvm-config --libs) -lcurses -lz -lpthread -ltinfo -lrt -ldl $(LINK_OPT_FLAGS)
+
+
+LLVM_PATH=$(LLVM_INSTALL)
+PLUTO_PATH=/home/dgadioli/opt/pluto-install
+
+
+
+CC=$(LLVM_PATH)/bin/clang
+LD=$(LLVM_PATH)/bin/llvm-link
+LLI=$(LLVM_PATH)/bin/lli
+OPT=$(LLVM_PATH)/bin/opt
+LLC=$(LLVM_PATH)/bin/llc
+PLUTO=$(PLUTO_PATH)/bin/polycc
+PLUTO_SCRIPT=$(SELF_DIR)/scripts/pluto_opt
+PLUTO_FLAG=$(SELF_DIR)/scripts/pluto_flaggy
+PLUTO_EXPANDER=$(SELF_DIR)/scripts/pluto_expander
+PLUTO_POSTPROCESSOR=$(SELF_DIR)/scripts/pluto_postprocessor
+
+CCPP=$(LLVM_PATH)/bin/clang++
+
+FOLDER_GLOBAL_BASE=$(SELF_DIR)
+
+
+#FORTRAN SUPPORT. CFORTRAN has to be defined in the environment (gcc-4.7 should be fine)
+DRAGONEGG=$(DRAGONEGG_PATH)/dragonegg.so
+DRAGONEGG_FLAGS=-cpp -O0 -S -fplugin=$(DRAGONEGG)  -fplugin-arg-dragonegg-emit-ir 
+
+# The following variables are defined in the automatically generated Makefiles
+# Profiler to use
+#PROFILER=myProfile
+
+# Hosts for submitting MPI processes. Set it as: "--hosts cloud1,cloud2,cloud3"
+#MPIHOSTSFLAG?=
+

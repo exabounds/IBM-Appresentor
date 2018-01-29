@@ -1,0 +1,88 @@
+#
+# (C) Copyright IBM Corporation 2017
+#
+# All rights reserved. This program and the accompanying materials
+# are made available under the terms of the Eclipse Public License v1.0
+# which accompanies this distribution, and is available at
+# http://www.eclipse.org/legal/epl-v10.html
+#
+# Contributors:
+#    IBM Algorithms & Machines team
+#
+
+# Overall PISA library specification
+CNLS_PATH=$(PISA_LIB_PATH)
+CNLS_LPATH=$(COUPLED_PASS_PATH)
+DNLS_PATH=$(PISA_LIB_PATH)
+DNLS_LPATH=$(DECOUPLED_PASS_PATH)
+
+OPT_CNLS_FLAGS=-load $(CNLS_LPATH)/Analysis.so -analysis
+OPT_DNLS_FLAGS=-load $(DNLS_LPATH)/Analysis.so -analysis
+LD_CNLS_FLAGS=-L$(CNLS_PATH) -lanalysisCoupled
+LD_DNLS_FLAGS=-L$(CNLS_PATH) -lanalysisDecoupled
+
+
+# Default PISA parameter setting
+WINDOW_SIZE?=54
+DATA_CACHE_LINE_SIZE?=64
+INST_CACHE_LINE_SIZE?=64
+INST_SIZE?=4
+MAX_EXPECTED_THREADS?=64
+PISA_PORT?=1100
+
+
+
+# Analyses definition
+DTR_NLS_FLAGS?=-analyze-data-temporal-reuse -data-cache-line-size=$(DATA_CACHE_LINE_SIZE) -data-reuse-distance-resolution=1 -data-reuse-distance-resolution-final-bin=1073741824 -analyze-memory-footprint
+
+#ITR_NLS_FLAGS?=-analyze-inst-temporal-reuse -inst-cache-line-size=$(INST_CACHE_LINE_SIZE) -inst-size=$(INST_SIZE)
+
+ILP_NLS_FLAGS?=-analyze-ilp -window-size=$(WINDOW_SIZE)
+
+RCA_NLS_FLAGS?=-register-counting
+
+MPI_NLS_FLAGS?=-mpi-stats
+
+CMM_NLS_FLAGS?=-mpi-data
+
+OMP_NLS_FLAGS?=-openmp-stats
+
+ECL_NLS_FLAGS?=-external-library-call-count
+
+APP_NLS_FLAGS?=-app-name="$(APP_NAME)" -test-name="$(OPTIMIZATION_FLAGS)" -max-expected-threads=$(MAX_EXPECTED_THREADS)
+
+# All CNLS together
+NLS_FLAGS?=$(DTR_NLS_FLAGS) $(ITR_NLS_FLAGS) $(ILP_NLS_FLAGS) $(RCA_NLS_FLAGS) $(MPI_NLS_FLAGS) $(OMP_NLS_FLAGS) $(CMM_NLS_FLAGS) $(ECL_NLS_FLAGS) $(APP_NLS_FLAGS)
+#NLS_FLAGS?=$(MPI_NLS_FLAGS) $(CMM_NLS_FLAGS)
+NLS_DONLY_FLAGS?=
+
+
+
+# Access to specific CNLS through Makefile
+GetPISAtype = $(word 2, $(subst ., ,$(1)))
+
+GetPISAflags = \
+$(if $(filter $(call GetPISAtype,$(1)),dtr)\
+    ,$(DTR_NLS_FLAGS)\
+) \
+$(if $(filter $(call GetPISAtype,$(1)),itr)\
+    ,$(ITR_NLS_FLAGS)\
+) \
+$(if $(filter $(call GetPISAtype,$(1)),ilp)\
+    ,$(ILP_NLS_FLAGS)\
+) \
+$(if $(filter $(call GetPISAtype,$(1)),rca)\
+    ,$(RCA_NLS_FLAGS)\
+) \
+$(if $(filter $(call GetPISAtype,$(1)),mpi)\
+    ,$(MPI_NLS_FLAGS)\
+) \
+$(if $(filter $(call GetPISAtype,$(1)),omp)\
+    ,$(OMP_NLS_FLAGS)\
+) \
+$(if $(filter $(call GetPISAtype,$(1)),cmm)\
+    ,$(CMM_NLS_FLAGS)\
+) \
+$(if $(filter $(call GetPISAtype,$(1)),ecl)\
+    ,$(ECL_NLS_FLAGS)\
+) 

@@ -1,0 +1,332 @@
+#!/usr/bin/env python
+"""
+* (C) Copyright IBM Corporation 2017
+ *
+ * All rights reserved. This program and the accompanying materials
+ * are made available under the terms of the Eclipse Public License v1.0
+ * which accompanies this distribution, and is available at
+ * http://www.eclipse.org/legal/epl-v10.html
+ *
+ * Contributors:
+ *    IBM Algorithms & Machines team
+""" 
+
+
+#################################
+###### Import section
+#################################
+import argparse                          # processing the input
+import os.path as path                   # handling the paths
+import os                                # for creating the path
+import errno                             # for checking before creating a path
+import sys                               # for exiting the script
+import subprocess                        # for calling commands
+import shutil                            # for copying files
+import inspect                           # for retrieving the position of the script
+import pprint                            # for pretty printing the name of the 
+import time                              # for the name of the folder
+import itertools                         # for the combination generations
+import imp                               # for dynamically load modules
+import doe_common                        # for manipulating the doe
+
+
+
+
+#################################
+###### Begin configuration part
+#################################
+
+
+optimizations = {
+	#'tile'          : ['none', '8', '24','32', '64'],
+#	'tile'          : ['2', '16','32','48','64'],
+	'tile'          : ['none'],
+	'tileL2'        : ['none'],
+#	'fusion'        : ['none', 'smart', 'smart', 'max', 'max'],
+	'fusion'        : ['none'],
+#	'unrolling'     : ['none', '2', '4', '8', '16'],
+  'unrolling'     : ['none'],
+	'vectorization' : ['none'],
+	'parallel'      : ['auto']   # pluto can automatically parallelize the loop
+}
+
+# used to remove tile parameters from the exploration
+tile_fixed_values = {
+	#'tile_d1'         : 'tile_d0',
+	#'tile_d2'         : '64'
+}
+
+
+# used to filter out the amount of input level for each application
+def filter_input(build_input, run_input):
+	"""
+	Used to alter the input of the single application.
+
+	Parameter:
+		- build_input: dictionary of compile-time flags
+		- run_input:   dicotionary of run-time flags
+
+	Note:
+	Both the dictionary have this shape:
+	*_input = {
+		'FLAG_NAME_1'    : ['VALUE1', 'VALUE2', ...],
+		'FLAG_NAME_2'    : ['VALUE1', 'VALUE2', ...],
+		...
+	}
+	"""
+
+	# take a single value for the input
+	#for input_name in build_input:
+	#	if len(build_input[input_name]) > 1:
+	#		new_values = [build_input[input_name][0]]
+	#		del build_input[input_name]
+	#		build_input[input_name] = list(new_values)
+
+	# take a signle value for the input
+	#for input_name in run_input:
+	#	if len(run_input[input_name]) > 1:
+	#		new_values = [run_input[input_name][0]]
+	#		del run_input[input_name]
+	#		run_input[input_name] = list(new_values)
+
+	return build_input, run_input
+
+
+#################################
+###### End configuration part
+#################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#################################
+###### Script body
+#################################
+
+experiment_counter = 0
+
+
+# used to compute the plan
+def build_plan(build_input, run_input, dim_tiling, design):
+
+	# set modificable the optimizations (for tiling) and the experiment counter
+	global optimizations
+	global experiment_counter
+
+	# filter the input parameters
+	build_input, run_input = filter_input(build_input, run_input)
+
+	# build the doe space
+	parameters, translator = doe_common.build_doe_space(dict(optimizations), build_input, run_input, omp_threads, mpi_procs, dim_tiling)
+
+	if 'Plackett-Burman' == design:
+		plan = doe_common.plackett_burmann(parameters, translator, tile_fixed_values)
+		for p in plan:
+			experiment_counter += len(plan[p])
+		return plan
+	if 'Two-Level-Full-Factorial' == design:
+		plan = doe_common.two_level_full_factorial(parameters, translator, tile_fixed_values)
+		for p in plan:
+			experiment_counter += len(plan[p])
+		return plan
+	if 'Central-Composite' == design:
+		plan = doe_common.central_composite(parameters, translator, tile_fixed_values)
+		for p in plan:
+			experiment_counter += len(plan[p])
+		return plan
+	if 'Latin-Square' == design:
+		plan = doe_common.latin_square(parameters, translator, tile_fixed_values)
+		for p in plan:
+			experiment_counter += len(plan[p])
+		return plan
+	if 'Random' == design:
+		plan = doe_common.random_doe(parameters, translator, tile_fixed_values)
+		for p in plan:
+			experiment_counter += len(plan[p])
+		return plan
+	if 'Exhaustive' == design:
+		plan = doe_common.exhaustive(parameters, translator, tile_fixed_values)
+		for p in plan:
+			experiment_counter += len(plan[p])
+		return plan
+
+	# defensive programming 
+	print('[ERROR] Defensive programming: unknown algorithm "{0}"!'.format(design))
+	sys.exit(os.EX_DATAERR)
+
+
+def mkdir_p(path):
+    try:
+        os.makedirs(path)
+    except OSError as exc: # Python >2.5
+        if exc.errno == errno.EEXIST and os.path.isdir(path):
+            pass
+        else: raise
+
+
+if __name__ == "__main__":
+
+
+	# get the location of this script
+	self_location = path.abspath(path.realpath(path.split(inspect.getfile( inspect.currentframe() ))[0]))
+	results_location = path.abspath(path.realpath(path.join(path.split(inspect.getfile( inspect.currentframe() ))[0], "../results")))
+
+
+	# get the list of the available benchmarks
+	benchmarks = os.walk(path.join(self_location, "..", "benchmarks")).next()[1]
+
+	# set all the implemented doe algorithm
+	algorithms = ['Plackett-Burman', 'Two-Level-Full-Factorial', 'Central-Composite', 'Latin-Square', 'Random', 'Exhaustive']
+
+	# parse the input arguments
+	arg_parser = argparse.ArgumentParser(description='utility application to automatically perform experiments')
+#	arg_parser.add_argument('--version', action='version', version='0.1a', help='print the version of the program and exit')
+	arg_parser.add_argument('--benchmark', dest='bench', type=str, default=benchmarks[0], choices=benchmarks, help='the benchmark to be used for the experiments')
+	arg_parser.add_argument('--experiment', dest='exp', type=str, default='experiment', help='the name of the experiment')
+	arg_parser.add_argument('--designType', dest='doe', type=str, default=algorithms[0], choices=algorithms, help='the DOE strategy to use'  )
+	arg_parser.add_argument('--designSpace', dest='dsName', type=str, default=algorithms[0], help='Application-dependent design space definition. Usually, {train,test}.'  )
+	args = arg_parser.parse_args()
+
+
+	# get the list of all the applications that compose the benchmark
+	apps_path = []
+	for dirpath, dirnames, filenames in os.walk(path.join(self_location, '..', 'benchmarks',  args.bench)):
+		if 'autorun.py' in filenames:
+			apps_path.append(path.realpath(path.join(dirpath, '../src')))
+	print('[INFO] Found {0} application(s) in benchmark "{1}"'.format(len(apps_path), args.bench))
+
+
+
+	####### Creating the experiment folder
+
+
+	# creating the folder of the experiment
+	experiment_folder = path.join(results_location, args.exp, time.strftime('%Y-%m-%d_%H.%M.%S'))
+	mkdir_p(path.abspath(experiment_folder))
+
+
+	# write the outer makefile of the experiment
+	with open(path.join(experiment_folder, 'Makefile'), 'w') as outer_makefile:
+
+		# take the list of application name
+		app_list = [ x.split('/')[-2] for x in apps_path ]
+		app_list.sort()
+
+		# write the header of the Makefile
+		outer_makefile.write('.PHONY: clean  plot generate.cnls run.cnls ')
+		for app in app_list:
+			outer_makefile.write(' gen{0}.cnls'.format(app))
+			outer_makefile.write(' run{0}.cnls'.format(app))
+		outer_makefile.write('\n\n\n\n\n')
+
+		# write the dependencies for the the generate command
+		outer_makefile.write('generate.cnls:')
+		for app in app_list:
+			outer_makefile.write(' gen{0}.cnls'.format(app))
+		outer_makefile.write('\n')
+
+		# write the dependencies for the the run command
+		outer_makefile.write('run.cnls:')
+		for app in app_list:
+			outer_makefile.write(' run{0}.cnls'.format(app))
+		outer_makefile.write('\n')
+		
+		# write the dependencies for the the run native command
+		outer_makefile.write('runnative:\\\nrunnative{0}'.format('\\\nrunnative'.join(sorted(app_list))))
+		outer_makefile.write('\n\n\n\n\n')
+
+		# write the command to generate all the executables
+		for app in app_list:
+			outer_makefile.write('gen{0}.cnls:\n'.format(app))
+			outer_makefile.write('\t@$(MAKE) -C ./{0} generate.cnls\n'.format(app))
+			outer_makefile.write('\n')
+		outer_makefile.write('\n\n\n\n\n')
+
+		# write the command to run  all the experiments
+		for app in app_list:
+			outer_makefile.write('run{0}.cnls:\n'.format(app))
+			outer_makefile.write('\t@$(MAKE) -C ./{0} experiments.cnls\n'.format(app))
+			outer_makefile.write('\n')
+		outer_makefile.write('\n\n\n\n\n')
+		
+		# write the command to run natively all the experiments
+		for app in app_list:
+			outer_makefile.write('runnative{0}:\n'.format(app))
+			outer_makefile.write('\t@$(MAKE) -C ./{0} runnative\n'.format(app))
+		outer_makefile.write('\n\n\n\n\n')
+
+		# write the command to plot all the applications
+		outer_makefile.write('plot:\n')
+		for app in app_list:
+			outer_makefile.write('\t@$(MAKE) -C ./{0} plot\n'.format(app))
+
+		# write the clean rule
+		outer_makefile.write('\n\n\n\nclean:\n')
+		for app in app_list:
+			outer_makefile.write('\t@$(MAKE) -C ./{0} clean\n'.format(app))
+
+
+	# loop over the applciations
+	for app  in apps_path:
+
+
+		########## Obtaining the Design-Space
+
+		print('[INFO]\t * Generating experimental plan for application "{0}"'.format(app.split('/')[-2]))
+
+		# import the module
+		file_name, file_path, description = imp.find_module('autorun', [path.join(app, '../autorun_config')])
+		config = imp.load_module('autorun', file_name, file_path, description)
+
+		# get the input description
+		build_input, run_input, omp_threads, mpi_procs = config.getInputParameterRange(args.dsName)
+
+		# get the dimension of the data structure
+		dim = config.getDimensionNumber()
+
+
+
+		########## Build the run plan
+
+		# obtain the experiment plan
+		plan = build_plan(build_input, run_input, dim, args.doe)
+
+
+		# create the application directory
+		mkdir_p(path.join(experiment_folder, app.split('/')[-2]))
+
+		# write the makefile of doom
+		with open(path.join(experiment_folder, app.split('/')[-2], 'Makefile'), 'w') as makefile:
+			doe_common.generate_makefile(makefile, plan, app, args.bench)
+
+
+	# write that it is all ok
+	print('[INFO] Experimental campaign generated!')
+	print('[INFO] This experimental campaign is composed by {0} run(s)'.format(experiment_counter))
+	print('[INFO] In order to run the experiment campaign:')
+	print('[INFO]    1) cd {0}'.format(experiment_folder))
+	print('[INFO]    2) make generate.cnls -j20')
+	print('[INFO]    3) make run.cnls -j8')

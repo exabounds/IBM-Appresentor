@@ -1,0 +1,168 @@
+#!/usr/bin/env python
+"""
+ * (C) Copyright IBM Corporation 2017
+ *
+ * All rights reserved. This program and the accompanying materials
+ * are made available under the terms of the Eclipse Public License v1.0
+ * which accompanies this distribution, and is available at
+ * http://www.eclipse.org/legal/epl-v10.html
+ *
+ * Contributors:
+ *    IBM Algorithms & Machines team
+""" 
+from __future__ import print_function
+
+
+#################################
+###### Import section
+#################################
+import argparse                          # processing the input
+import os.path as path                   # handling the paths
+import os                                # for creating the path
+import errno                             # for checking before creating a path
+import sys                               # for exiting the script
+import subprocess                        # for calling commands
+import shutil                            # for copying files
+
+
+
+
+
+
+if __name__ == "__main__":
+
+
+	#################################
+	###### The argument parser
+	#################################
+
+	# create the main argument parser
+	arg_parser = argparse.ArgumentParser(description='Utility program that copy-paste the expanded sourcefile scop loop in the destination file')
+	arg_parser.add_argument('--version', action='version', version='0.1a', help='print the version of the program and exit')
+	arg_parser.add_argument('--input_file_c', dest='infileC', type=str, required=True, help='the path of the source file in C/C++')
+	arg_parser.add_argument('--input_file_E', dest='infileE', type=str, required=True, help='the path of the expanded source file in C/C++')
+	arg_parser.add_argument('--out', dest='outfile', type=str, required=True, help='the path of the destination file')
+
+
+	args = arg_parser.parse_args()
+
+
+
+	#################################
+	###### Get all the scops
+	#################################
+	scops = {}
+
+	# read the expanded files
+	with open(args.infileE, 'r') as infile:
+		expanded_file_lines = infile.readlines()
+
+	# find the scops in the expanded file
+	state = 'READY'
+	for line in expanded_file_lines:
+
+		# strip the string
+		clean_line = line.strip()
+
+		# update the state
+		tokens = clean_line.split()
+		if ('#pragma' in tokens) and ('scop' in tokens):
+			if state == 'READY':
+				state = 'PRAGMA_FOUND'
+				current_scop = []
+				try:
+					scop_tag = tokens[tokens.index('scop') + 1]
+				except IndexError as err:
+					scop_tag = ''
+				continue
+
+		if ('#pragma' in tokens) and ('endscop' in tokens):
+			if state == 'PRAGMA_FOUND':
+				state = 'READY'
+				scops[scop_tag] = current_scop
+				continue
+
+		# store the found pragma
+		if state == 'PRAGMA_FOUND':
+			if not clean_line == '':
+				current_scop.append(line)
+
+
+	# print('[DEBUG] {0} scop found:'.format(len(scops)))
+	# for n, s in enumerate(scops):
+	# 	print('\t ----- THE {0}^ SCOP -----'.format(n +1))
+	# 	for l in s:
+	# 		print('{0}'.format(l))
+	# 	print()
+
+
+
+
+	#################################
+	###### Produce the output
+	#################################
+
+	# read the normal C/C++ source file
+	with open(args.infileC, 'r') as infile:
+		source_file_lines = infile.readlines()
+
+
+
+
+	# write the output file
+	state = 'READY'
+	counter = 0
+	with open(args.outfile, 'w+') as outfile:
+
+		# loop over the original C source file
+		for line in source_file_lines:
+
+			# strip it
+			clean_line = line.strip()
+
+			# update the state based on the input
+			tokens = clean_line.split()
+			if ('#pragma' in tokens) and ('scop' in tokens):
+				if state == 'READY':
+					state = 'PRAGMA_FOUND'
+					try:
+						scop_tag = tokens[tokens.index('scop') + 1]
+						del tokens[tokens.index('scop') + 1]
+					except IndexError as err:
+						scop_tag = ''
+			if ('#pragma' in tokens) and ('endscop' in tokens):
+				if state == 'PRAGMA_PRINTED':
+					state = 'READY'
+
+			# update the state based on the output
+			if state == 'PRAGMA_FOUND':
+
+				# write in the output the start pragma
+				outfile.write(' '.join(tokens))
+				outfile.write('\n')
+
+				# then write the expanded pragma
+				try:
+					for l in scops[scop_tag]:
+						outfile.write(l)
+
+					# update the counter and the state
+					counter += 1
+					state = 'PRAGMA_PRINTED'
+					print('\t  * Sucessfully preprocessed SCoP {0}'.format(scop_tag))
+				except KeyError as ex:
+					# this loop will be excluded by the preprocessor
+					state = 'READY'
+					continue
+
+			# write normally if the state is ready
+			if state == 'READY':
+				outfile.write(line)
+
+	
+	# cross-check if we have printed all the scop
+	if counter != len(scops.keys()):
+		print('[ERROR] Read {0} scop(s) in input, but written {1} scop(s) in output'.format(len(scops), counter))
+		sys.exit(os.EX_DATAERR)
+
+	sys.exit(os.EX_OK)

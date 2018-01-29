@@ -1,0 +1,5 @@
+As an example application we investigate the lulesh application from the CORAL benchmarks.
+This is a third party application and by running the install script it is going to be downloaded from the internet.
+
+More information about lulesh are available at:
+https://asc.llnl.gov/CORAL-benchmarks/#lulesh

@@ -1,0 +1,104 @@
+#!/usr/bin/env python
+"""
+ * (C) Copyright IBM Corporation 2017
+ *
+ * All rights reserved. This program and the accompanying materials
+ * are made available under the terms of the Eclipse Public License v1.0
+ * which accompanies this distribution, and is available at
+ * http://www.eclipse.org/legal/epl-v10.html
+ *
+ * Contributors:
+ *    IBM Algorithms & Machines team
+""" 
+from __future__ import print_function
+
+
+#################################
+###### Import section
+#################################
+import argparse                          # processing the input
+import os                                # for creating the path
+import sys                               # for exiting the script
+
+if __name__ == "__main__":
+
+
+
+	#################################
+	###### The argument parser of the script
+	#################################
+
+	# create the main argument parser
+	arg_parser = argparse.ArgumentParser(description='Utility for the optimizations flags in llvm')
+	arg_parser.add_argument('--version', action='version', version='0.1a', help='print the version of the wrapper and exit')
+	arg_parser.add_argument('--vectorization', dest='vectorization', type=str, default='none', help='with "auto" the vectorization is enabled using the Polly default values, with "none" the vectorization is totally disabled and with a number is possible to force the vectorization value. The default is "auto"')
+	arg_parser.add_argument('--unrolling', dest='unrolling', type=str, default='none', help='unrolling factor, with "none" the unrolling is disabled, with "auto" it is used the default llvm algorithm, while a number force an unrolling factor')
+	arg_parser.add_argument('--tile', dest='tile', type=str, default='none', help='The size of the tile in each direction, coma separated eg. "3,5,6". Or "none" to disable the tiling. (default none)')
+	arg_parser.add_argument('--tileL2', dest='tile2', type=str, default='none', help='The size of the sub-tile in each direction, coma separated eg. "3,5,6". Or "none" to disable the L2 tiling. (default none)')
+	arg_parser.add_argument('--fusion', dest='fusion', type=str, default='none', choices=['none', 'smart', 'max'], help='The selected level of loop fusion (default none)')
+	arg_parser.add_argument('--parallel', dest='par', type=str, default='none', choices=['none', 'auto'], help='Enable automatic parallelization of the scops regions')
+	arg_parser.add_argument('which', type=str, nargs='?', help='Which flag the makefile needs')
+	args = arg_parser.parse_args()
+
+
+
+
+
+
+
+
+	#################################
+	###### Figuring out the flags
+	#################################
+
+	# this variable holds all the flag of the optimizations
+	optimization_flags_opt = {}
+	optimization_flags_clang = []
+
+	# for the vectorization
+	if args.vectorization == 'none':
+		optimization_flags_clang.extend(['-fno-vectorize', '-fno-slp-vectorize'])
+	elif args.vectorization == 'auto':
+		optimization_flags_opt['vectorization'] = ['-loop-vectorize']
+	else:
+		try:
+			optimization_flags_opt['vectorization'] = ['-loop-vectorize', '-force-vector-width={0}'.format(int(args.vectorization))]
+		except:
+			print('[WRAPPER] LOGIC ERROR: Unable to understand the vectorization flag: "{0}"'.format(args.fusion))
+			sys.exit(os.EX_USAGE)
+
+
+	# for the loop unrolling
+	if args.unrolling == 'none':
+		optimization_flags_clang.append('-fno-unroll-loops')
+		optimization_flags_opt['unrolling'] = ['-disable-loop-unrolling']
+	elif args.unrolling == 'auto':
+		optimization_flags_opt['unrolling'] = ['-indvars', '-loop-unroll']
+	else:
+		try:
+			optimization_flags_opt['unrolling'] = ['-indvars', '-loop-unroll', '-unroll-count={0}'.format(int(args.unrolling))]
+		except:
+			print('[WRAPPER] LOGIC ERROR: Unable to understand the unroll flag: "{0}"'.format(args.unrolling))
+			sys.exit(os.EX_USAGE)
+
+
+	# if the developer desires the clang flags
+	if args.which == 'clang':
+		for f in optimization_flags_clang:
+			print('{0} '.format(f), end='')
+		sys.exit(os.EX_OK)
+
+	# generating the optimization flag
+	flags = []
+	if 'vectorization' in optimization_flags_opt:
+		flags.extend(optimization_flags_opt['vectorization'])
+	if 'unrolling' in optimization_flags_opt:
+		flags.extend(optimization_flags_opt['unrolling'])
+
+
+
+	# otherwise print the opt flags
+	if args.which == 'opt':
+		for f in flags:
+			print('{0} '.format(f), end='')
+	sys.exit(os.EX_OK)

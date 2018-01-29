@@ -1,0 +1,183 @@
+#!/usr/bin/env python
+"""
+ * (C) Copyright IBM Corporation 2017
+ *
+ * All rights reserved. This program and the accompanying materials
+ * are made available under the terms of the Eclipse Public License v1.0
+ * which accompanies this distribution, and is available at
+ * http://www.eclipse.org/legal/epl-v10.html
+ *
+ * Contributors:
+ *    IBM Algorithms & Machines team
+""" 
+
+#################################
+###### Import section
+#################################
+import argparse                          # processing the input
+import os.path as path                   # handling the paths
+import os                                # for creating the path
+import errno                             # for checking before creating a path
+import sys                               # for exiting the script
+import subprocess                        # for calling commands
+import shutil                            # for copying files
+import inspect                           # for retrieving the position of the script
+import pprint                            # for pretty printing the name of the 
+import time                              # for the name of the folder
+import itertools                         # for the combination generations
+
+
+
+optimizations = ['tile', 'unrolling', 'vectorization', 'fusion', 'parallel', 'OMP', 'NPC']
+
+
+instrumentation_values = {
+  'WINDOW_SIZE'            :  'inf',#'54',
+  'DATA_CACHE_LINE_SIZE'   :  'inf',#'128',
+  'INST_CACHE_LINE_SIZE'   :  'inf',#'16',
+  'INST_SIZE'              :  'inf'#'1'
+}
+
+
+def name2value(what, none_is_actually_a_size = False):
+  if what == 'none':
+    if none_is_actually_a_size:
+      return '1'
+    else:
+      return '0'
+  if what == 'auto':
+    return '-1'
+  if what == 'smart':
+    return '1'
+  if what == 'max':
+    return '2'
+  try:
+    return str(int(what))
+  except:
+    return str(what)
+
+
+def name2Params(name):
+  answer = {}
+  tokens = name.replace('__','|')
+  tokens = tokens[1:]
+  tokens = tokens[:-1]
+  tokens = tokens.split('|')
+  for t in tokens:
+
+    # skip empty tokens
+    if not t:
+      continue
+      
+    if t == '.dtr':
+      continue
+
+    # split the name from the value
+    if t[0] == "-" :
+      t = t[1:]
+    	
+    param_name, param_value = t.split('-')
+
+    # check if we need to disable pluto
+    if 'tile' in param_name:
+      enable_this_tiling_level = False
+      tile_values = param_value.split('.')
+      for t_temp in tile_values:
+        if t_temp != 'none':
+          enable_this_tiling_level = True
+
+
+    # handle the tiling thing
+    if param_name == 'tile':
+      if not enable_this_tiling_level:
+        tile_values = ['0' for x in tile_values]
+      for index, value in enumerate(tile_values):
+        answer['tileD{0}'.format(index)] = name2value(value, True)
+
+    # handle the tilingL2 thing
+    if 'tileL2' == param_name:
+
+      # check if the first level of tiling is enabled
+      for t2 in tokens:
+        if not t2:
+          continue
+        if t2 == '.dtr':
+          continue
+
+        if t2[0] == "-" :
+          t2 = t2[1:]
+        name1, value1 = t2.split('-')
+        if name1 == 'tile':
+          enable_pluto = False
+          for t_temp in tile_values:
+            if t_temp != 'none':
+              enable_pluto = True
+              break
+          if not enable_pluto:
+            enable_this_tiling_level = False
+
+      if not enable_this_tiling_level:
+        tile_values = ['0' for x in tile_values]
+      for index, value in enumerate(tile_values):
+        answer['tileL2D{0}'.format(index)] = name2value(value)
+
+    # process the remainder of the parameters
+    if (not 'tile' == param_name) and (not 'tileL2' == param_name):
+      name, value = t.split('-')
+      answer[name] = name2value(value)
+
+  return answer
+
+
+
+if __name__ == "__main__":
+
+	# parse the input arguments
+  arg_parser = argparse.ArgumentParser(description='utility application that generate an R script for converting the profile')
+  arg_parser.add_argument('--out', dest='outfile', type=str, help='The path to the output file (R script to convert the profile)' )
+  arg_parser.add_argument('--application', dest='app', type=str, help='The application name')
+  arg_parser.add_argument('--benchmark', dest='bench', type=str, help='The benchmark name')
+  arg_parser.add_argument('profile', type=str, help='The path to the input file (parse the scaling configuration from this filenape)'  )
+  args = arg_parser.parse_args()
+
+
+	# get the parameters of the application
+  parameters = name2Params(os.path.splitext(os.path.splitext(os.path.basename(args.profile))[0])[0])
+
+
+	# find all the optimization and input tokens
+  opt_flags = {}
+  input_flags = {}
+  for p in parameters:
+    for o in optimizations:
+      if o in p:
+        opt_flags[p] = parameters[p]
+      else:
+        input_flags[p] = parameters[p]
+
+
+	# open the output file
+  with open(args.outfile,'w') as f:
+
+    # write the first part of the script
+    f.write('{\n')
+    f.write('  "application" : "{0}",\n'.format(args.app))
+    f.write('  "benchmark" : "{0}",\n'.format(args.bench))
+
+
+    # write the application scale
+    f.write('  "appScale" : {\n')
+    scaling_factors = []
+    for p in parameters:
+      if parameters[p]!= '':
+        scaling_factors.append('    "{0}" : {1}'.format(p, parameters[p]))
+    f.write(",\n".join(scaling_factors))
+    f.write('\n  }\n')
+    f.write('\n}\n')
+
+
+
+
+
+
+

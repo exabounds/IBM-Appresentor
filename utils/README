@@ -1,0 +1,1 @@
+myProfile: calls the target program and then returns its execution time in milliseconds (by using gettimeofday).

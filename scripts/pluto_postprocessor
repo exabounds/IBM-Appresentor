@@ -1,0 +1,436 @@
+#!/usr/bin/env python
+"""
+ * (C) Copyright IBM Corporation 2017
+ *
+ * All rights reserved. This program and the accompanying materials
+ * are made available under the terms of the Eclipse Public License v1.0
+ * which accompanies this distribution, and is available at
+ * http://www.eclipse.org/legal/epl-v10.html
+ *
+ * Contributors:
+ *    IBM Algorithms & Machines team
+""" 
+from __future__ import print_function
+
+
+#################################
+###### Import section
+#################################
+import argparse                          # processing the input
+import os.path as path                   # handling the paths
+import os                                # for creating the path
+import errno                             # for checking before creating a path
+import sys                               # for exiting the script
+import subprocess                        # for calling commands
+import shutil                            # for copying files
+
+
+
+# we are assuming that the application is processing code
+application_state = 'CODE'
+def remove_comments(line):
+	"""
+	This function removes the comments from a line of source code
+	Parameters:
+		- line -> The string that defines the line of the source code
+	Return:
+		-The line of code without comments
+	Note:
+	This function is statefull, and it uses the global variable
+	'application_state'. It is no thread safe.
+	It also assumes going backward in the reading, which is from down
+	to up.
+	"""
+
+	# strip it
+	line = line.strip()
+
+	#print('[DEBUG] \tProcessing "{0}"'.format(line))
+
+	# reverse the line
+	line = line[::-1]
+
+	# this is the string without comments
+	line_no_comment = ''
+
+	# loop over the string for comments
+	global application_state
+	for c in line:
+
+		# update the CODE application_state
+		if application_state == 'CODE':
+			if c == '/':
+				application_state = 'COMMENT_INIT'
+				#print('[DEBUG] \t{0} - Found a comment initial ("{1}")'.format(c,line_no_comment))
+				continue
+			else:
+				line_no_comment = '{0}{1}'.format(line_no_comment, c)
+				#print('[DEBUG] \t{0} - Just code ("{1}")'.format(c,line_no_comment))
+				continue
+
+		# update the COMMENT_INIT application_state
+		if application_state == 'COMMENT_INIT':
+			if c == '/':
+				#print('[DEBUG] \t{0} - Another initial comment ("{1}")'.format(c,line_no_comment))
+				line_no_comment = '{0}/'.format(line_no_comment, c)
+				continue
+			elif c == '*':
+				#print('[DEBUG] \t{0} - It is a comment! ("{1}")'.format(c,line_no_comment))
+				application_state = 'COMMENT'
+				continue
+			else:
+				application_state = 'CODE'
+				#print('[DEBUG] \t{0} - It is not a comment, back in the code section ("{1}")'.format(c,line_no_comment))
+				line_no_comment = '{0}/{1}'.format(line_no_comment, c)
+				continue
+
+		# update the COMMENT application_state
+		if application_state == 'COMMENT':
+			if c == '*':
+				#print('[DEBUG] \t{0} - Maybe the comment is finished ("{1}")'.format(c,line_no_comment))
+				application_state = 'COMMENT_END'
+				continue
+			else:
+				continue
+
+		# update the COMMENT_END application_state
+		if application_state == 'COMMENT_END':
+			if c == '/':
+				application_state = 'CODE'
+				#print('[DEBUG] \t{0} - Yep, the comment is finished ("{1}")'.format(c,line_no_comment))
+				continue
+			elif c == '*':
+				#print('[DEBUG] \t{0} - Almost back to the code ("{1}")'.format(c,line_no_comment))
+				continue
+			else:
+				#print('[DEBUG] \t{0} - The comment is finished! ("{1}")'.format(c,line_no_comment))
+				application_state = 'COMMENT'
+
+
+	# return the line without the comments
+	return line_no_comment[::-1]
+
+
+
+
+# these are the keyword used in the declaration of the loop variables
+type_keyword = ['unsigned', 'int', 'register', 'long']
+def get_declarations(line):
+	"""
+	This function parse a declaration of variables
+	and return the list of the variable names
+	Parameters:
+		- line -> A string that defines the line of code
+	Return:
+	The list of the varible names found.
+	If the statement is not a declaration, an empty list
+	"""
+
+	#print('[DEBUG] \tProcessing "{0}"'.format(line))
+
+	# check if the last caracter is a ';'
+	if line[-1:] != ';':
+		return []
+
+	#print('[DEBUG] \tIt terminates with a semicolon: OK'.format(line))
+
+	# remove comas and semicolon
+	line = line.replace(',','')
+	line = line.replace(';','')
+
+	# tokenize the string
+	terms = line.split()
+
+	#print('[DEBUG] \tLine splitted in "{0}"'.format(terms))
+
+	# a declaration needs at least 2 tokens
+	if len(terms) < 2:
+		return []
+
+	#print('[DEBUG] \tIt has at least two terms: OK"')
+
+	# check if the first token is a type variable
+	if not terms[0] in type_keyword:
+		return []
+
+	#print('[DEBUG] \tThe first term is a type: OK'.format(terms))
+
+	# parse the remainder of the statement
+	state = 'NORMAL'
+	variable_names = []
+	for t in terms:
+
+		if state == 'NORMAL':
+			if (not t in type_keyword) and (t != '='):
+				variable_names.append(t)
+				#print('[DEBUG] \tFound variable "{0}"'.format(t))
+				continue
+			elif t == '=':
+				state = 'ASSIGNMENT'
+				#print('[DEBUG] \tThere is also an assignement : "{0}"'.format(t))
+				continue
+			else:
+				continue
+
+		if state == 'ASSIGNMENT':
+			try:
+				float(t)
+				state = 'NORMAL'
+				#print('[DEBUG] \tFrom a normal number "{0}"'.format(t))
+			except:
+				# whatever the statement is, it is not a declaration
+				#print('[DEBUG] \tSomething is wrong in the assignement, quit "{0}"'.format(t))
+				return []
+
+	# return the list of found variables
+	#print('[DEBUG] \tFound the following variables: "{0}"'.format(variable_names))
+	return variable_names
+
+
+
+
+
+
+def omp_for_pragma(line, variables):
+	"""
+	This function recognizes if the line is the omp for
+	pragma and in that case update or add the private
+	clause to the pragma
+	Parameters:
+		- line      -> A string that defines the line of code
+		- variables -> The list of variable names that must be private
+	Return:
+		The modified line, if it is the omp pragma we are looking for
+		A null string, otherwise
+	"""
+
+	# split the line in tokens based on space character
+	tokens = line.split()
+
+	#print('[DEBUG] \tThe statement is splitted in: "{0}"'.format(tokens))
+
+	# the first token must be 'pragma' and the second 'omp'
+	if tokens[0] != '#pragma' or tokens[1] != 'omp':
+		return ''
+
+	#print('[DEBUG] \tFound #pragma and omp as first two tokens: OK')
+
+	# remove the tokens and search for the keyword 'for'
+	tokens = tokens[2:]
+	if tokens[0] == 'parallel':
+		if tokens[1] == 'for':
+			tokens = tokens[2:]
+			new_line = '#pragma omp parallel for '
+		else:
+			#print('[DEBUG] \tBut there is no for, quit')
+			return ''
+	elif tokens[0] == 'for':
+		tokens = tokens[1:]
+		new_line = '#pragma omp for '
+	else:
+		return ''
+
+	#print('[DEBUG] \tOh, there is also the for keyword: OK')
+
+
+	# prepare the list of variables
+	variables_string = ','.join(variables)
+
+
+	#print('[DEBUG] \tWe want to add the following vars to be private: "{0}"'.format(variables_string))
+
+	
+
+	# if 'private' is not specified then it is done
+	temp_string = ''.join(tokens)
+	if not 'private' in temp_string:
+		#print('[DEBUG] \tYAY! No previos private preperties, easy ;)')
+		for t in tokens:
+			new_line = '{0} {1}'.format(new_line, ' '.join(tokens))
+		new_line = '{0} private({1})'.format(new_line, variables_string)
+		return new_line
+
+	# if private is specified then tokenize the string for '(' and ')'
+	temp_string = temp_string.replace('(', ' ')
+	temp_string = temp_string.replace(')', ' ')
+	prop_tokens = temp_string.split()
+	#print('[DEBUG] \tFound the following properties: "{0}"'.format(prop_tokens))
+
+	# compose the stuff
+	state = 'PROPERTY'
+	for t in prop_tokens:
+
+		if state == 'PROPERTY':
+			new_line = '{0} {1}'.format(new_line, t)
+			if t == 'private':
+				state = 'DONE'
+				continue
+			else:
+				state = 'FLAGS'
+				continue
+
+		if state == 'DONE':
+			new_line = '{0}({1},{2}) '.format(new_line, t, variables_string)
+			state = 'PROPERTY'
+			continue
+
+		if state == 'FLAGS':
+			new_line = '{0}({1}) '.format(new_line, t)
+			state = 'PROPERTY'
+
+	# return the new line
+	return new_line
+
+
+
+
+
+
+if __name__ == "__main__":
+
+
+	#################################
+	###### The argument parser
+	#################################
+
+	# create the main argument parser
+	arg_parser = argparse.ArgumentParser(description='Utility program that postprocess the Pluto output for openMP')
+	arg_parser.add_argument('--version', action='version', version='0.1a', help='print the version of the program and exit')
+	arg_parser.add_argument('--input', dest='infile', type=str, required=True, help='the path of the source file in C/C++ modified by Pluto')
+	arg_parser.add_argument('--out', dest='outfile', type=str, required=True, help='the path of the destination file')
+
+
+	args = arg_parser.parse_args()
+
+
+
+	#################################
+	###### Find all the modified region of code
+	#################################
+
+	# read the input file
+	with open(args.infile, 'r') as infile:
+		lines = infile.readlines()
+
+	# find all the scop generated by pluto
+	scops = [(index-1) for index, line in enumerate(lines) if line.strip() == '/* Start of CLooG code */']
+
+
+	# loop over the scops
+	fixed_scop_counter = 0
+	for evaluated_scop_line in scops:
+
+		# declare the list of found variables
+		found_variables = []
+
+		# go upward in the code
+		line_number = evaluated_scop_line
+		line = str(lines[line_number])
+		#print('----- Evaluating scop at line "{0}" -------'.format(evaluated_scop_line-1))
+		while( line != '/* End of CLooG code */' and line_number > 0 ):
+
+			# removes the comments
+			line = remove_comments(line)
+
+			# check if the line is not empty
+			if line:
+
+				#print('[DEBUG] Looking for declaration in line {0} -> "{1}"'.format(line_number, line))
+				v_f = get_declarations(line)
+				if v_f:
+					# we found a declaration where we expected it,
+					# so we add the names of the variables
+					found_variables.extend(v_f)
+					#print('[DEBUG] At line {0} declared variables {1}'.format(line_number, v_f))
+					#print('[DEBUG] Going to add "{0}"'.format(found_variables))
+				else:
+					# no more declarations found, so: it is either the pragma
+					# omp for we are looking for, or it is something else
+					#print('[DEBUG] Not a declaration!')
+					new_line_replacement = omp_for_pragma(line, found_variables)
+
+					if new_line_replacement == '':
+						# it is something else, quit
+						#print('[DEBUG] Neither the omp pragma for we are looking for... NEXT!')
+						break
+					else:
+						# job complete!
+						#print('[DEBUG] The new line is "{0}"'.format(new_line_replacement))
+
+						# remove the old pragma definition
+						del lines[line_number]
+
+						# insert the new pragma before the generated comment
+						#print('Inseting "{0}" at line {1}'.format('{0}'.format(new_line_replacement), evaluated_scop_line))
+						lines.insert(evaluated_scop_line, '{0}\n'.format(new_line_replacement))
+						fixed_scop_counter += 1
+						break
+
+			# go upword again
+			line_number -= 1
+			line = str(lines[line_number])
+
+		#print('[DEBUG] ######################')
+		application_state = 'CODE'
+
+
+	if fixed_scop_counter > 0:
+		print('\t  * Fixed {0}/{1} SCoP(s) preexistent OpenMP macros.'.format(fixed_scop_counter, len(scops)))
+
+
+
+	# fixing the namespace clashing bug
+	changed = False
+	for row in range(7,0,-1):
+
+		# get the current line
+		l = lines[row].strip()
+
+		# fix the min clashing problem
+		if l == '#define min(x,y)    ((x) < (y)? (x) : (y))':
+			l = '#define pluto_namespace_min(x,y)    ((x) < (y)? (x) : (y))\n'
+			del lines[row]
+			lines.insert(row, l)
+			changed = True
+			continue
+
+		# fix the maximum clashing problem
+		if l == '#define max(x,y)    ((x) > (y)? (x) : (y))':
+			l = '#define pluto_namespace_max(x,y)    ((x) > (y)? (x) : (y))\n'
+			del lines[row]
+			lines.insert(row, l)
+			changed = True
+			continue
+
+	if changed:
+		print('\t  * Fixed min/max clashing name.')
+
+
+	# fixing the OpenMP bug
+	with_openmp_pragmas = False
+	with_openmp_header = False
+	for l in lines:
+		if '#pragma omp' in l:
+			with_openmp_pragmas = True
+		if 'omp.h' in l:
+			with_openmp_header = True
+		if with_openmp_pragmas and not with_openmp_header:
+			break
+
+
+	if with_openmp_pragmas and not with_openmp_header:
+		lines.insert(0,'#endif\n')
+		lines.insert(0,'#include<omp.h>\n')
+		lines.insert(0,'#if defined(_OPENMP)\n')
+		print('\t  * Restored OpenMP header inclusion.'.format(scops, fixed_scop_counter))
+
+
+
+	# time to write the output
+	with open(args.outfile, 'w+') as outfile:
+		for l in lines:
+			outfile.write(l)
+
+	sys.exit(os.EX_OK)
+
+

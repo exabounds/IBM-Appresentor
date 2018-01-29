@@ -1,0 +1,159 @@
+#!/usr/bin/env python
+"""
+ * (C) Copyright IBM Corporation 2017
+ *
+ * All rights reserved. This program and the accompanying materials
+ * are made available under the terms of the Eclipse Public License v1.0
+ * which accompanies this distribution, and is available at
+ * http://www.eclipse.org/legal/epl-v10.html
+ *
+ * Contributors:
+ *    IBM Algorithms & Machines team
+""" 
+from __future__ import print_function
+
+
+#################################
+###### Import section
+#################################
+import argparse                          # processing the input
+import os.path as path                   # handling the paths
+import os                                # for creating the path
+import errno                             # for checking before creating a path
+import sys                               # for exiting the script
+import subprocess                        # for calling commands
+import shutil                            # for copying files
+
+
+
+
+
+
+if __name__ == "__main__":
+
+
+	#################################
+	###### The argument parser of the script
+	#################################
+
+	# create the main argument parser
+	arg_parser = argparse.ArgumentParser(description='Utility wrapper for the pluto optimizer')
+	arg_parser.add_argument('--version', action='version', version='0.1a', help='print the version of the wrapper and exit')
+	arg_parser.add_argument('--vectorization', dest='vectorization', type=str, default='none', help='with "auto" the vectorization is enabled using the Polly default values, with "none" the vectorization is totally disabled and with a number is possible to force the vectorization value. The default is "auto"')
+	arg_parser.add_argument('--unrolling', dest='unrolling', type=str, default='none', help='unrolling factor, with "none" the unrolling is disabled, with "auto" it is used the default llvm algorithm, while a number force an unrolling factor')
+	arg_parser.add_argument('--polycc', dest='polycc', type=str, default='polycc', help='The pluto executable (default "polycc")')
+	arg_parser.add_argument('--tile', dest='tile', type=str, default='none', help='The size of the tile in each direction, coma separated eg. "3,5,6". Or "none" to disable the tiling. (default none)')
+	arg_parser.add_argument('--tileL2', dest='tile2', type=str, default='none', help='The size of the sub-tile in each direction, coma separated eg. "3,5,6". Or "none" to disable the L2 tiling. (default none)')
+	arg_parser.add_argument('--fusion', dest='fusion', type=str, default='none', choices=['none', 'smart', 'max'], help='The selected level of loop fusion (default none)')
+	arg_parser.add_argument('--parallel', dest='par', type=str, default='none', choices=['none', 'auto'], help='Enable automatic parallelization of the scops regions')
+	arg_parser.add_argument('--out', dest='outname', type=str, required=True, help='The name of the output file')
+	arg_parser.add_argument('source_file', nargs='+', help='The name of the source file(s) to be generated')
+
+
+
+	args = arg_parser.parse_args()
+
+
+
+
+	#################################
+	###### Loop for every source code provided
+	#################################
+
+	for input_file in args.source_file:
+
+		# get the extension and name of the file
+		input_file = path.realpath(path.abspath(input_file))
+		file_name, file_extension = path.splitext(input_file)
+		file_name = '{0}/{1}'.format(os.getcwd(), path.basename(file_name))
+		output_file_name = args.outname
+
+
+		# check if we can use pluto
+		try:
+
+			command = [args.polycc, input_file, '-o', output_file_name, '--noprevector', '--silent', '--nocloogbacktrack']
+
+			# check for parallelism
+			if args.par == 'auto':
+				command.append('--parallelize')
+
+			# check if we need to actually disable pluto
+			disable_pluto = True
+			for t in args.tile.split(','):
+				if t != 'none':
+					disable_pluto = False
+					break
+			disableL2 = True
+			for t in args.tile2.split(','):
+				if t != 'none':
+					disableL2 = False
+					break
+
+			# hack for script compatibility
+			args.tile = args.tile.replace('none','1')
+			args.tile2 = args.tile2.replace('none', '1')
+
+			# check if we need to apply the tiling transformation
+			if not disable_pluto:
+				geometry = [ int(x) for x in args.tile.split(',') if x.isdigit() ]
+				with open('./tile.sizes', 'w+') as tile_file:
+					for g in geometry:
+						tile_file.write('{0}\n'.format(g))
+
+					command.append('--tile')
+
+					if not disableL2:
+						geometry = [ int(x) for x in args.tile2.split(',') if x.isdigit() ]
+						for g in geometry:
+							tile_file.write('{0}\n'.format(g))
+
+						command.append('--l2tile')
+
+				if args.tile == 'auto':
+					try:
+						os.remove(path.join(os.getcwd(), 'tile.sizes'))
+					except OSError as exc:
+						if exc.errno == errno.ENOENT:
+							pass
+						else:
+							raise
+			else:
+				try:
+					os.remove(path.join(os.getcwd(), 'tile.sizes'))
+				except OSError as exc:
+					if exc.errno == errno.ENOENT:
+						pass
+					else:
+						raise
+
+
+			# check for the fusion transformation
+			if args.fusion == 'none':
+				command.append('--nofuse')
+			elif args.fusion == 'smart':
+				command.append('--smartfuse')
+			elif args.fusion == 'max':
+				command.append('--maxfuse')
+			else:
+				print('ERROR: unable to understand the fusion flag: "{0}"'.format(args.fusion))
+				sys.exit(os.EX_USAGE)
+
+
+
+			# execute pluto
+			if not disable_pluto:
+				pluto = subprocess.Popen(command, cwd=os.getcwd())
+				pluto.wait()
+
+				# check if we need to copy the file
+				if pluto.returncode != os.EX_OK:
+					shutil.copy(input_file, output_file_name)
+			else:
+				shutil.copy(input_file, output_file_name)
+
+		except:
+			# for any other exception boil out
+			raise
+
+	sys.exit(os.EX_OK)

@@ -1,0 +1,789 @@
+#!/usr/bin/env python
+"""
+ * (C) Copyright IBM Corporation 2017
+ *
+ * All rights reserved. This program and the accompanying materials
+ * are made available under the terms of the Eclipse Public License v1.0
+ * which accompanies this distribution, and is available at
+ * http://www.eclipse.org/legal/epl-v10.html
+ *
+ * Contributors:
+ *    IBM Algorithms & Machines team
+""" 
+
+
+#################################
+###### Import section
+#################################
+import argparse                          # processing the input
+import os.path as path                   # handling the paths
+import os                                # for creating the path
+import errno                             # for checking before creating a path
+import sys                               # for exiting the script
+import subprocess                        # for calling commands
+import shutil                            # for copying files
+import json                              # for importing the profile
+import scipy.stats                       # for the linear regression
+import numpy as np
+
+
+
+
+alive_threshold = 0.05
+
+
+
+#################################
+###### Helper functions
+#################################
+
+
+
+def name2value(what, none_is_actually_a_size = False):
+	if what == 'none':
+		if none_is_actually_a_size:
+			return '1'
+		else:
+			return '0'
+	if what == 'auto':
+		return '-1'
+	if what == 'smart':
+		return '1'
+	if what == 'max':
+		return '2'
+	try:
+		return str(int(what))
+	except:
+		return str(what)
+
+
+
+
+def mkdir_p(path):
+    try:
+        os.makedirs(path)
+    except OSError as exc: # Python >2.5
+        if exc.errno == errno.EEXIST and os.path.isdir(path):
+            pass
+        else: raise
+
+
+
+
+def get_pisa_profiles(where):
+	# retrieve all the time files from the experiments
+	data_files = []
+	for dirpath, dirnames, filenames in os.walk(os.path.abspath(os.path.realpath(bench))):
+		data_files.extend([path.join(dirpath, x) for x in filenames if x.endswith('.profile')])
+
+	# safe check
+	if not data_files:
+		#print('PLOT: Unable to find any profile files, aborting...')
+		sys.exit(os.EX_NOINPUT)
+
+	# parse the pisa profile
+	profiles = {}
+	for df in data_files:
+		with open(df, 'r') as f:
+			profile = json.load(f)
+		profiles[os.path.splitext(os.path.basename(df))[0]] = profile
+	return profiles
+
+
+
+
+def extract_data_cdf(profiles):
+	extracted_dataset = {}
+	for p in profiles:
+		extracted_dataset[p] = dict(profiles[p]['threads'][0]['dataReuseDistribution'][0]['statistics']['data'])
+	return extracted_dataset
+
+
+def extract_instruction_cdf(profiles):
+	extracted_dataset = {}
+	for p in profiles:
+		extracted_dataset[p] = dict(profiles[p]['threads'][0]['instReuseDistribution'][0]['statistics']['instructions'])
+	return extracted_dataset
+
+
+def extract_ilp(profiles):
+	extracted_dataset = {}
+	for p in profiles:
+		extracted_dataset[p] = float(profiles[p]['threads'][0]['ilp'][0]['statistics']['arithmetic_mean'])
+	return extracted_dataset
+
+def extract_num_inst(profiles):
+	extracted_dataset = {}
+	for p in profiles:
+		extracted_dataset[p] = float(profiles[p]['threads'][0]['instructionMix']['instructions_analyzed'])
+	return extracted_dataset
+
+
+
+
+def name2Params(name):
+	answer = {}
+	tokens = name.split('_')
+	for t in tokens:
+
+		# skip empty tokens
+		if not t:
+			continue
+
+		# split the name from the value
+		param_name, param_value = t.split('-')
+
+		# check if we need to disable pluto
+		if 'tile' in param_name:
+			enable_this_tiling_level = False
+			tile_values = param_value.split('.')
+			for t_temp in tile_values:
+				if t_temp != 'none':
+					enable_this_tiling_level = True
+
+
+		# handle the tiling thing
+		if param_name == 'tile':
+			if not enable_this_tiling_level:
+				tile_values = ['0' for x in tile_values]
+			for index, value in enumerate(tile_values):
+				answer['tile_d{0}'.format(index)] = name2value(value, True)
+
+		# handle the tilingL2 thing
+		if 'tileL2' == param_name:
+
+			# check if the first level of tiling is enabled
+			for t2 in tokens:
+				if not t2:
+					continue
+				name1, value1 = t2.split('-')
+				if name1 == 'tile':
+					enable_pluto = False
+					for t_temp in tile_values:
+						if t_temp != 'none':
+							enable_pluto = True
+							break
+					if not enable_pluto:
+						enable_this_tiling_level = False
+
+			if not enable_this_tiling_level:
+				tile_values = ['0' for x in tile_values]
+			for index, value in enumerate(tile_values):
+				answer['tileL2_d{0}'.format(index)] = name2value(value)
+
+		# process the remainder of the parameters
+		if (not 'tile' == param_name) and (not 'tileL2' == param_name):
+			name, value = t.split('-')
+			answer[name] = name2value(value)
+
+	return answer
+
+
+
+
+def add_indirect_parameters(profiles):
+
+	# declare the new profiles
+	new_profiles = {}
+
+	# loop over the name of the runs
+	for run_name in profiles:
+
+		# get the parameters values
+		parameters = name2Params(run_name)
+
+		# declare all the paramters to be added
+		added_parameters = {}
+		#added_parameters['tileArea'] = 1
+		#added_parameters['tileGeometry'] = ''
+		#added_parameters['tileL2Area'] = 1
+
+		# ------- compute the tile and tileL2 area
+		#for p in sorted(parameters):
+			#if ('tile' in p) and (not 'tileL2' in p):
+			#	tile_value = int(parameters[p])
+			#	added_parameters['tileArea'] *= tile_value
+			#if ('tile' in p) and (not 'tileL2' in p):
+			#	if added_parameters['tileGeometry'] == '':
+			#		added_parameters['tileGeometry'] = str(parameters[p])
+			#	else:
+			#		added_parameters['tileGeometry'] = '{0}x{1}'.format(added_parameters['tileGeometry'], str(parameters[p]))
+			#if ('tileL2' in p):
+			#	tile_value = int(parameters[p])
+			#	added_parameters['tileL2Area'] *= tile_value
+
+		# ------- compute the fusion and tile 1 thing
+		#try:
+		#	fusion_value = name2value(parameters['fusion'])
+		#	added_parameters['fusion&tileD1'] = int(parameters['tile_d1']) * int(fusion_value)
+		#except KeyError as err:
+		#	print('WARNING: unable to compute the "fusionTile_d1" parameter')
+
+
+		# add the new paramters to the name
+		new_name = str(run_name)
+		for p in added_parameters:
+			new_name = '{0}_{1}-{2}_'.format(new_name, p, str(added_parameters[p]))
+
+		# copy the profile
+		new_profiles[new_name] = profiles[run_name]
+
+	return new_profiles
+
+
+
+
+
+def extract_parameters_values(profiles):
+
+	parameters_values = {}
+
+	# loop over the experiments run
+	for run_name in profiles:
+
+		# get the parameters value
+		parameters = name2Params(run_name)
+
+		# loop over the parameters
+		for p in parameters:
+			try:
+				if not str(parameters[p]) in str(parameters_values[p]):
+					try:
+						parameters_values[p].append(int(parameters[p]))
+					except ValueError as err:
+						parameters_values[p].append(parameters[p])
+			except KeyError as err:
+				try:
+					parameters_values[p] = [int(parameters[p])]
+				except:
+					parameters_values[p] = [parameters[p]]
+
+	# sort the parameters values
+	for p in parameters_values:
+		parameters_values[p].sort()
+		#print('For paramter "{0}": [ {1} ]'.format(p, ','.join(str(x) for x in parameters_values[p])))
+
+	# prune the constant parameters
+	eviction_list = []
+	for p in parameters_values:
+		if len(parameters_values[p]) == 1:
+			eviction_list.append(p)
+	for e in eviction_list:
+		del parameters_values[e]
+
+	#for p in parameters_values:
+	#	print('For paramter "{0}": [ {1} ]'.format(p, ','.join(str(x) for x in parameters_values[p])))
+
+	return parameters_values
+
+
+
+
+
+
+#################################
+###### Data processing function
+#################################
+
+
+def complete_distance_dataset(profiles):
+	
+	# get all the distance values
+	distance_values = []
+	for run_name in profiles:
+		for distance in profiles[run_name]:
+			if not distance in distance_values:
+				distance_values.append(distance)
+	distance_values.sort()
+
+	# add the missing distance values
+	for distance in distance_values:
+		for run_name in profiles:
+			if not distance in profiles[run_name]:
+				#selected_distance = max( x for x in profiles[run_name] if x < distance)
+				profiles[run_name][distance] = 0 #profiles[run_name][selected_distance]
+
+	# return the found distances
+	return distance_values
+
+
+
+def equal_test(series):
+
+	# compute the average of the two series
+	ref = series[0]
+	series = series[1:]
+
+	max_pvalue = 0
+
+	for s in series:
+		max_pvalue = max(equal_test2(s, ref), max_pvalue)
+
+
+	# they are different?
+	return max_pvalue
+
+
+def equal_test2(a, b, threshold = 0.1):
+
+	# too lazy to proper fix the case of one element array
+	ugly_temp_list = list(a)
+	ugly_temp_list.extend(b)
+
+	# compute the average of the two series
+	global_avg = np.mean(ugly_temp_list)
+
+	# compute the upper and lower bound
+	delta = global_avg*threshold
+
+	# compute the terms for the comparison
+	df = len(a) + len(b) - 2
+	a_avg = np.mean(a)
+	b_avg = np.mean(b)
+	a_var = np.var(a, ddof=1)
+	b_var = np.var(b, ddof=1)
+	denom = np.sqrt(a_var/float(len(a)) + b_var/float(len(b)))
+
+
+	dist = scipy.stats.distributions.t
+	if denom > 0:
+
+		# test for h0a
+		t = float(a_avg - b_avg - delta) / denom
+		p_value = dist.cdf(t, df)
+		max_pvalue = p_value
+
+		# test for h0b
+		t = float(a_avg - b_avg + delta) / denom
+		p_value =dist.sf(t,df)
+		max_pvalue = max(max_pvalue, p_value)
+	
+		return max_pvalue
+	else:
+		return 0
+
+
+
+
+
+
+
+#################################
+###### Plotting functions
+#################################
+
+
+def write_average_distance_files(data, parameters_values, where):
+	
+	# create the directory
+	working_directory = os.path.join(where)
+	mkdir_p(working_directory)
+	data_files = []
+	max_value = -1.0
+
+	# declare the counters
+	x_map = []
+	x_counter = 0
+	total_avg = 0.0
+	total_counter = 0
+	p_values = []
+
+	# state the parameters that are not useless
+	parameter_alive = {}
+
+	# loop over the parameters
+	for param_name in sorted(parameters_values):
+		print('\t\tEvaluating parameter "{0}"'.format(param_name))
+
+		# update the map
+		start_x = x_counter
+
+		# define the x and y values for obtaining the slope
+		x_values = []
+		y_values = []
+
+		# create the data file
+		data_file_name = os.path.join(working_directory, '{0}.data'.format(param_name))
+		data_files.append(data_file_name)
+		with open(data_file_name, 'w') as f:
+
+			# declare the samples for the p_value
+			samples = []
+
+			# loop over the parameter values
+			print('\t\t\tAll the possible values are [ {0} ]'.format(','.join(str(x) for x in parameters_values[param_name])))
+			for param_value in parameters_values[param_name]:
+				print('\t\t\t\t- for the param value "{0}" [ '.format(param_value), end='')
+
+
+				# declare the counters
+				avg = 0.0
+				counter = 0
+				evaluated_set = []
+
+				for run_name in data:
+
+					# get the paramters values
+					parameters = name2Params(run_name)
+
+					# check if the run should be taken in account
+					if str(parameters[param_name]) == str(param_value):
+						value = 0
+						cnt_value = 0
+						for distance in data[run_name]:
+							value += int(distance)*int(data[run_name][distance])
+							cnt_value += data[run_name][distance]
+						value = float(value) / float(cnt_value)
+						print('{0:.2f} '.format(value), end='')
+						avg += value
+						counter += 1
+						total_avg += value
+						total_counter += 1
+						evaluated_set.append(value)
+
+				# update the x and y values
+				y_values.extend(evaluated_set)
+				x_values.extend(x_counter - start_x for x in evaluated_set)
+
+				# compute the average
+				avg = avg / float(counter)
+				max_value = max(max_value, avg, 1)
+				samples.append(evaluated_set)
+				print('] -> avg = {1:.2f}'.format(param_value, avg))
+
+				# write it on the file
+				f.write('{0}\t{1}\n'.format(x_counter, avg))
+
+				# incremet the x_counter
+				x_counter += 1
+
+
+			# normalize the y_values
+			max_y = max(y_values)
+			y_values = [(y / max_y) for y in y_values]
+
+
+			# compute the linear regression of the line
+			slope, intercept, rvalue, pvalue, stderr = scipy.stats.linregress(x_values, y_values)
+			print('\t\t\tThe slope is: {0}'.format(slope))
+			if abs(slope) > alive_threshold:
+				parameter_alive[param_name] = slope
+
+
+			# compute the p_values
+			p_value = equal_test(samples)
+
+			p_values.append('{0}\t{1}'.format(param_name, p_value))
+
+			# increment the x_counter for separate the parameters
+			x_map.append('"{0}" {1}'.format(param_name, start_x + (float(x_counter - start_x) / float(2))))
+			x_counter += 2
+
+	# write the p-value file
+	with open(os.path.join(working_directory, 'p_values.data'), 'w') as f:
+		for p in p_values:
+			f.write('{0}\n'.format(p))
+	print('\t\tMax value = {0}'.format(max_value))
+	avarage = total_avg / float(total_counter)
+	return data_files, x_map, max_value, avarage, parameter_alive
+
+
+
+
+def write_single_field_files(data, parameters_values, where):
+	
+	# create the directory
+	working_directory = os.path.join(where)
+	mkdir_p(working_directory)
+	data_files = []
+	max_value = -1.0
+
+	# declare the counters
+	x_map = []
+	x_counter = 0
+	total_avg = 0.0
+	total_counter = 0
+	p_values = []
+
+	# state the parameters that are not useless
+	parameter_alive = {}
+
+	# loop over the parameters
+	for param_name in sorted(parameters_values):
+		print('\t\tEvaluating parameter "{0}"'.format(param_name))
+
+		# update the map
+		start_x = x_counter
+
+		# define the x and y values for obtaining the slope
+		x_values = []
+		y_values = []
+
+		# create the data file
+		data_file_name = os.path.join(working_directory, '{0}.data'.format(param_name))
+		data_files.append(data_file_name)
+		with open(data_file_name, 'w') as f:
+
+			# declare the samples for the p_value
+			samples = []
+
+			# declare the list for the 
+
+			# loop over the parameter values
+			print('\t\t\tAll the possible values are [ {0} ]'.format(','.join(str(x) for x in parameters_values[param_name])))
+			for param_value in parameters_values[param_name]:
+				print('\t\t\t- for the param value "{0}" [ '.format(param_value), end='')
+
+
+				# declare the counters
+				avg = 0.0
+				counter = 0
+				evaluated_set = []
+
+				for run_name in data:
+
+					# get the paramters values
+					parameters = name2Params(run_name)
+
+					# check if the run should be taken in account
+					if str(parameters[param_name]) == str(param_value):
+						value = data[run_name]
+						print('{0:.2f} '.format(value), end='')
+						avg += value
+						counter += 1
+						total_avg += value
+						total_counter += 1
+						evaluated_set.append(value)
+
+				# update the x and y values
+				y_values.extend(evaluated_set)
+				x_values.extend(x_counter - start_x for x in evaluated_set)
+
+				# compute the average
+				avg = avg / float(counter)
+				max_value = max(max_value, avg, 1)
+				samples.append(evaluated_set)
+				print('] -> avg = {1:.2f}'.format(param_value, avg))
+
+				# write it on the file
+				f.write('{0}\t{1}\n'.format(x_counter, avg))
+
+				# incremet the x_counter
+				x_counter += 1
+
+
+			# normalize the y_values
+			max_y = max(y_values)
+			y_values = [(y / max_y) for y in y_values]
+
+			# compute the linear regression of the line
+			slope, intercept, rvalue, pvalue, stderr = scipy.stats.linregress(x_values, y_values)
+			print('\t\t\tThe slope is: {0}'.format(slope))
+			if slope > alive_threshold:
+				parameter_alive[param_name] = slope
+
+			# compute the p_values
+			p_value = equal_test(samples)
+
+			p_values.append('{0}\t{1}'.format(param_name, p_value))
+
+			# increment the x_counter for separate the parameters
+			x_map.append('"{0}" {1}'.format(param_name, start_x + (float(x_counter - start_x) / float(2))))
+			x_counter += 2
+
+	# write the p-value file
+	with open(os.path.join(working_directory, 'p_values.data'), 'w') as f:
+		for p in p_values:
+			f.write('{0}\n'.format(p))
+	print('\t\tMax value = {0}'.format(max_value))
+	avarage = total_avg / float(total_counter)
+	return data_files, x_map, max_value, avarage, parameter_alive
+
+
+
+
+
+
+
+def plot_screening(where, data_files, x_map, max_value, avarage, evaluated_metric):
+	# define the gnuplot file name
+	gnuplot_name = os.path.join(where, 'parameter_impact.gnuplot')
+	
+	# write the gnuplot script file
+	with open(os.path.abspath(gnuplot_name), 'w') as fd:
+		fd.write('set terminal postscript eps enhanced color font "Helvetica,10"\n')
+		fd.write('set output "parameter_impact.eps"\n')
+		fd.write('set style line 1 lc rgb "#0060ad" lt 3 lw 2 pt 7 pi -1 ps 1.5\n')
+		fd.write('set style line 2 lc rgb "#ad4d00" lt 2 lw 1 pt 7 pi -1 ps 1.5\n')
+		fd.write('set pointintervalbox 3\n')
+		fd.write('set style line 101 lc rgb "#808080" lt 1 lw 1\n')
+		fd.write('set tics nomirror out scale 0.75\n')
+		fd.write(r'set format "%g"')
+		fd.write('\n')
+		fd.write('unset xlabel\n')
+		fd.write('set yrange [0:{0}]\n'.format(max_value + max_value*0.1))
+		fd.write('set border 3 front ls 101\n')
+		fd.write('set ylabel "{0}"\n'.format(evaluated_metric))
+		fd.write('set grid nopolar\n')
+		fd.write('unset key\n')
+		fd.write('set grid noxtics nomxtics ytics nomytics noztics nomztics nox2tics nomx2tics noy2tics nomy2tics nocbtics nomcbtics\n')
+		fd.write('set xtics({0})\n'.format(','.join(x_map)))
+		fd.write('set arrow 1 from graph 0,first {0} to graph 1,first {0} nohead ls 2\n'.format(avarage))
+		fd.write('plot')
+		for i,run in enumerate(data_files):
+			if i > 0:
+				fd.write(',')
+			fd.write(' "{0}" with linespoints ls 1'.format(os.path.basename(run)))
+		fd.write('\n')
+
+	# execute it
+	with open(gnuplot_name, 'r') as f:
+		gnuplot = subprocess.Popen('gnuplot', cwd=where, stdin=f)
+		gnuplot.wait()
+
+
+	# define the gnuplot file name
+	gnuplot_name = os.path.join(where, 'p_values.gnuplot')
+	
+	# write the gnuplot script file
+	with open(os.path.abspath(gnuplot_name), 'w') as fd:
+		fd.write('set terminal postscript eps enhanced color font "Helvetica,10"\n')
+		fd.write('set output "p_values.eps"\n')
+		fd.write("""
+# Don't show the legend in the chart
+set nokey
+
+# Thinner, filled bars
+set boxwidth 0.4
+set style fill solid 1.00
+
+# Set a title and Y label. The X label is obviously months, so we don't set it.
+set ylabel "p-value"
+
+# Rotate X labels and get rid of the small striped at the top (nomirror)
+set xtics nomirror rotate by -45
+
+# Replace small stripes on the Y-axis with a horizontal gridlines
+set tic scale 0
+set grid ytics
+
+# Remove border around chart
+unset border
+
+# Lighter grid lines
+set grid ytics lc rgb "#C0C0C0"
+
+# Manual set the Y-axis range
+set grid ytics lc rgb "#505050"
+			""")
+		fd.write('set yrange [0 to 1]\n')
+		fd.write('plot "p_values.data" using 2:xticlabels(1) with boxes lt rgb "#406090"\n')
+
+	# execute it
+	with open(gnuplot_name, 'r') as f:
+		gnuplot = subprocess.Popen('gnuplot', cwd=where, stdin=f)
+		gnuplot.wait()
+
+
+
+
+
+
+
+
+if __name__ == "__main__":
+
+
+
+	arg_parser = argparse.ArgumentParser(description='plot utility script')
+	arg_parser.add_argument('--version', action='version', version='0.1a', help='print the version of the program and exit')
+	arg_parser.add_argument('benchmark', type=str, nargs='+', help='the path to the target benchmark')
+	arg_parser.add_argument('--out', dest='out', type=str, default=os.getcwd(), help='the output path for datas and plots' )
+	args = arg_parser.parse_args()
+
+
+	for bench in args.benchmark:
+
+		# create the main plot folder
+		working_directory = os.path.join(args.out, 'pisa')
+		mkdir_p(working_directory)
+
+
+		# load all the profile files
+		profiles = get_pisa_profiles(bench)
+
+		# add indirect params
+		profiles = add_indirect_parameters(profiles)
+
+		# get the parameters values
+		parameters_values = extract_parameters_values(profiles)
+
+		# the list of all the  parameters that are alive
+		alive_parameters = [x for x in parameters_values]
+
+		
+
+		# generate the datas
+		data_cdf = extract_data_cdf(profiles)
+		print('*************************************************** Evaluating data access')
+		data_files, x_map, max_value, avarage, parameters = write_average_distance_files(data_cdf, parameters_values, os.path.join(working_directory, 'data_reuse_distance'))
+		plot_screening(os.path.join(working_directory, 'data_reuse_distance'), data_files, x_map, max_value, avarage, 'average reuse data distance')
+		
+		# filter out the parameters
+		for p in parameters:
+			try:
+				alive_parameters.remove(p)
+				print('The data reuse distance suggests that "{0}" is important with slope {1}'.format(p, parameters[p]))
+			except ValueError as itsok:
+				print('Even the data reuse distance suggests that "{0}" is important with slope {1}'.format(p, parameters[p]))
+
+		# generate the datas
+		instructions_cdf = extract_instruction_cdf(profiles)
+		print('\n\n*************************************************** Evaluating instruction access')
+		data_files, x_map, max_value, avarage, parameters = write_average_distance_files(instructions_cdf, parameters_values, os.path.join(working_directory, 'instructions_reuse_distance'))
+		plot_screening(os.path.join(working_directory, 'instructions_reuse_distance'), data_files, x_map, max_value, avarage, 'average reuse instruction distance')
+
+		# filter out the parameters
+		for p in parameters:
+			try:
+				alive_parameters.remove(p)
+				print('The instructions reuse distance suggests that "{0}" is important with slope {1}'.format(p, parameters[p]))
+			except ValueError as itsok:
+				print('Even the instructions reuse distance suggests that "{0}" is important with slope {1}'.format(p, parameters[p]))
+
+		# print the ilp
+		ilps = extract_ilp(profiles)
+		print('\n\n*************************************************** Evaluating ilp')
+		data_files, x_map, max_value, avarage, parameters = write_single_field_files(ilps, parameters_values, os.path.join(working_directory, 'ilp'))
+		plot_screening(os.path.join(working_directory, 'ilp'), data_files, x_map, max_value, avarage, 'instruction level parallelism')
+
+		# filter out the parameters
+		for p in parameters:
+			try:
+				alive_parameters.remove(p)
+				print('The ilp suggests that "{0}" is important with slope {1}'.format(p, parameters[p]))
+			except ValueError as itsok:
+				print('Even the ilp suggests that "{0}" is important with slope {1}'.format(p, parameters[p]))
+
+		# print the number instruction analysed
+		num_inst = extract_num_inst(profiles)
+		print('\n\n*************************************************** Evaluating num_instructions')
+		data_files, x_map, max_value, avarage, parameters = write_single_field_files(num_inst, parameters_values, os.path.join(working_directory, 'num_inst'))
+		plot_screening(os.path.join(working_directory, 'num_inst'), data_files, x_map, max_value, avarage, 'instruction level parallelism')
+
+		# filter out the parameters
+		for p in parameters:
+			try:
+				alive_parameters.remove(p)
+				print('The number of instructions analyzed suggests that "{0}" is important with slope {1}'.format(p, parameters[p]))
+			except ValueError as itsok:
+				print('Even the number of instructions analyzed suggests that "{0}" is important with slope {1}'.format(p, parameters[p]))
+
+		# print the alive parameters
+		print('\n\n\n************************************************************************')
+		print('The parameters that does NOT have an impact on the application performance (with threshold {0}), are:'.format(alive_threshold))
+		for p in alive_parameters:
+			print('\t- {0}'.format(p))
+		if not alive_parameters:
+			print('\tALL THE PARAMETERS INFLUENCE THE PERFORMANCE!')
+		print('************************************************************************\n\n\n')
