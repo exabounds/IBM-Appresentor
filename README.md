@@ -1,4 +1,4 @@
-# IBM-Appresentor
+# IBM Appresentor
 
 The _IBM Exascale Extrapolator_ (part of the [_IBM ExaBounds_](https://github.com/exabounds/IBM-ExaBounds/) distribution) scales software profiles to a target scale, e.g., exascale. It takes as input a set of software profiles representative of a parameter space, the input parameters of the profiled software. The parameter sets for those profiles must be generated according to a [design of experiments](https://en.wikipedia.org/wiki/Design_of_experiments).
 
